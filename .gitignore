@@ -1,0 +1,39 @@
+# --- Security & Credentials ---
+# Ignore all JSON files to prevent accidental credential leaks
+*.json
+# Specifically ensure the environment file is never tracked
+.env
+.env.local
+
+# --- Python Environment ---
+.venv/
+env/
+venv/
+ENV/
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Application Outputs & Local Data ---
+# Ignore all data files and generated reports
+data/
+*.csv
+*.xlsx
+*.pdf
+*.log
+
+# --- IDE & System Junk ---
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.bak
+*.swp
+
+# --- Explicit Allowances (Whitelisting) ---
+# If you have specific non-sensitive JSON/CSV files needed for the app,
+# you "un-ignore" them using the ! prefix:
+# !data/schema_template.json
