@@ -45,7 +45,7 @@ class ComplianceIntelligenceProvider:
                 model_name="gemini-2.5-flash",
                 project=self.project_id,
                 location=self.location,
-                temperature=0.0  # Deterministic output for compliance auditing
+                temperature=0.0
             )
 
             # Secure Vector Client Initialization

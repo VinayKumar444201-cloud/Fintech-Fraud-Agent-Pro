@@ -29,7 +29,7 @@ class ComplianceAuditEngine:
             model="gemini-2.5-flash",
             project=self.project_id,
             location=self.location,
-            temperature=0.1  # Low temperature for deterministic audit logic
+            temperature=0.1
         )
 
     def _get_auditor_prompt(self) -> ChatPromptTemplate:

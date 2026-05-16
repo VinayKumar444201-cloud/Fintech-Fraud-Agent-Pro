@@ -1,204 +1,312 @@
-import os
-import time
+import json
 import logging
+import time
+from typing import List
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field
+from rapidfuzz import process, fuzz
+from sklearn.ensemble import IsolationForest
 
-# Internal Specialized Modules
+# Force environment reload
+load_dotenv(override=True)
+
+# Imports for custom modules
 from utils.chat_agent import ComplianceIntelligenceProvider
 from utils.agents import ComplianceAuditEngine
 from utils.graph_logic import forensic_graph
 
-# Configuration & Logging
-load_dotenv()
+# --- Configuration & Logging ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# UI Configuration
-st.set_page_config(
-    page_title="Fintech Fraud Auditor Pro",
-    page_icon="🛡️",
-    layout="wide"
-)
+HIGH_RISK_COUNTRIES = ["Russia", "North Korea", "Iran", "Syria", "Belarus"]
+REPORTING_THRESHOLD = 10000.00
 
-# Enterprise Theme Overlay
+st.set_page_config(page_title="Fintech Fraud Auditor Pro", page_icon="🛡️", layout="wide")
+
 st.markdown("""
     <style>
     .main { background-color: #0e1117; }
     .stMetric { background-color: #1a1c24; padding: 15px; border-radius: 10px; border-left: 5px solid #00CC96; }
-    .stButton>button { border-radius: 5px; height: 3em; font-weight: bold; }
+    .stButton>button { border-radius: 5px; height: 3em; font-weight: bold; width: 100%; }
+    .stDataFrame { border: 1px solid #30363d; border-radius: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
 
-# --- Resource Singletons ---
+# --- PYDANTIC SCHEMAS (For Structured SAR Generation) ---
+class SuspectEntity(BaseModel):
+    entity_id: str = Field(description="Unique identifier for the user or business.")
+    risk_indicators: List[str] = Field(description="Specific red flags associated with this entity.")
+
+
+class SuspiciousActivityReport(BaseModel):
+    report_id: str = Field(description="Unique UUID for this generated SAR.")
+    primary_typology: str = Field(description="The main fraud typology detected (e.g., 'Smurfing', 'Obfuscation').")
+    entities_involved: List[SuspectEntity] = Field(description="Entities involved in the suspicious activity.")
+    narrative_investigation: str = Field(description="Chronological breakdown of the transactions.")
+    overall_risk_score: int = Field(ge=1, le=100, description="Calculated risk score from 1 to 100.")
+
+
+# --- CORE APPLICATION ---
 @st.cache_resource
 def initialize_system_nodes():
-    """Initializes backend service providers."""
     try:
-        intelligence = ComplianceIntelligenceProvider()
-        audit_engine = ComplianceAuditEngine()
-        return intelligence, audit_engine
+        return ComplianceIntelligenceProvider(), ComplianceAuditEngine()
     except Exception as e:
-        logger.error(f"System Initialization Failed: {e}")
-        st.error("Backend Service Offline. Check GCP/Qdrant Configuration.")
+        logger.error(f"Initialization Error: {e}")
+        st.error("System Offline: Verify API Credentials.")
         st.stop()
 
 
 rag_provider, audit_engine = initialize_system_nodes()
 
-# --- Application State Management ---
-if "audit_results" not in st.session_state:
-    st.session_state.audit_results = None
 
-# --- Dashboard Header ---
+def run_tiered_audit(row):
+    """Level 1 & 2 Audit Logic"""
+    amount = float(row.get('amount', 0))
+    country = str(row.get('country', ''))
+
+    # LEVEL 1: Deterministic Filter
+    is_high_value = amount >= REPORTING_THRESHOLD
+    is_high_risk_area = any(c.lower() in country.lower() for c in HIGH_RISK_COUNTRIES)
+
+    if not is_high_value and not is_high_risk_area:
+        return "CLEAR: Transaction below reporting threshold and originating from stable jurisdiction.", "Clear"
+
+    # LEVEL 2: Agentic Filter
+    payload = (
+        f"You are a Fintech AML Auditor. Evaluate this transaction against FATF guidelines: "
+        f"Amount: ${amount} | Jurisdiction: {country}. "
+        f"You MUST include the word 'SUSPICIOUS' if it violates rules, or 'CLEAR' if it is safe."
+    )
+
+    _, final_review = audit_engine.execute_verified_audit(payload, rag_provider.engine)
+
+    review_lower = final_review.lower()
+    if any(keyword in review_lower for keyword in ["suspicious", "high risk", "laundering", "flag"]):
+        verdict = "Suspicious"
+    else:
+        verdict = "Clear"
+
+    return final_review, verdict
+
+
+# --- UI Render ---
 st.title("🛡️ Fintech Fraud Auditor Pro")
-st.caption("Forensic Intelligence Platform | Framework: FATF Oct 2025 | Stateful Graph Engine")
+st.caption("Forensic Intelligence Platform | Framework: FATF 2025 | Stateful Graph Engine")
 
 with st.sidebar:
-    st.header("Operational Controls")
-    if st.button("Reset Audit Session"):
+    st.header("Control Center")
+    if st.button("💥 NUCLEAR CACHE RESET"):
+        st.cache_resource.clear()
+        st.cache_data.clear()
+        st.session_state.clear()
+        st.rerun()
+    if st.button("Reset Global Session"):
         st.session_state.audit_results = None
         st.rerun()
     st.divider()
-    st.status("Vertex AI: Connected", state="complete")
-    st.status("Qdrant Cloud: Active", state="complete")
+    st.status("Vertex AI Engine: Active", state="complete")
+    st.status("Qdrant Vector DB: Connected", state="complete")
+    st.status("Local Auth: Active", state="complete")
 
-# --- Phase 1: Data Ingestion & Batch Auditing ---
+if 'audit_results' not in st.session_state:
+    st.session_state.audit_results = None
+
+# --- PHASE 1: Data Ingestion ---
 if st.session_state.audit_results is None:
-    upload_col, info_col = st.columns([2, 1])
-
-    with upload_col:
-        ledger_file = st.file_uploader("Import Transaction Ledger (CSV)", type=["csv"])
+    ledger_file = st.file_uploader("Upload Transaction Ledger (CSV)", type=["csv"])
 
     if ledger_file:
         batch_df = pd.read_csv(ledger_file)
-        st.subheader("Data Ingestion Preview")
+        batch_df.columns = batch_df.columns.str.strip().str.lower()
+
+        # Data normalization
+        mapping = {'from': 'sender', 'source': 'sender', 'to': 'receiver', 'destination': 'receiver',
+                   'id': 'transaction_id'}
+        batch_df = batch_df.rename(columns=mapping)
+
+        if 'sender' not in batch_df.columns: batch_df['sender'] = 'Unknown_Entity'
+        if 'receiver' not in batch_df.columns: batch_df['receiver'] = 'Internal_Wallet'
+
         st.dataframe(batch_df.head(10), use_container_width=True)
 
-        if st.button("🚀 Execute Forensic Audit"):
-            processed_data, risk_tags = [], []
-            progress_bar = st.progress(0)
+        if st.button("🚀 Run Batch Audit"):
+            # ==========================================
+            # --- TIER 0: STATISTICAL ML FUNNEL ---
+            # ==========================================
+            st.markdown("### 🧠 Tier 0: Statistical ML Funnel")
+            with st.spinner("Running high-speed anomaly detection (Isolation Forest)..."):
+                start_time = time.time()
 
-            # Stress test batch limit
-            target_batch = batch_df.head(10)
+                # 1. Initialize the Unsupervised ML Model
+                ml_model = IsolationForest(contamination=0.15, random_state=42)
 
-            for idx, row in target_batch.iterrows():
-                payload = f"ID: {row.get('transaction_id')} | Amt: {row.get('amount')} | Country: {row.get('country')}"
+                # 2. Extract features (Using transaction amount for the simulation)
+                X = batch_df[['amount']].fillna(0)
 
-                # Verified RAG Audit
-                _, final_review = audit_engine.execute_verified_audit(payload, rag_provider.engine)
+                # 3. Predict: -1 means Anomaly (Fraud Risk), 1 means Normal (Safe)
+                batch_df['ml_score'] = ml_model.fit_predict(X)
 
-                processed_data.append(final_review)
-                risk_tags.append("Suspicious" if "suspicious" in final_review.lower() else "Clear")
+                # 4. Filter the Funnel
+                safe_batch = batch_df[batch_df['ml_score'] == 1]
+                flagged_batch = batch_df[batch_df['ml_score'] == -1].copy()
 
-                progress_bar.progress((idx + 1) / len(target_batch))
-                time.sleep(0.5)
+                exec_time = round((time.time() - start_time) * 1000, 2)
 
-            results_df = target_batch.copy()
-            results_df['Forensic_Analysis'] = processed_data
-            results_df['Verdict'] = risk_tags
-            results_df['Verified'] = False
+                st.success(f"⚡ Tier 0 Complete in {exec_time}ms.")
+                st.info(
+                    f"🛡️ **Funnel Stats:** Processed {len(batch_df)} rows. Dropped {len(safe_batch)} safe transactions. Forwarding {len(flagged_batch)} anomalies to AI layers.")
 
-            st.session_state.audit_results = results_df
-            st.rerun()
+            # ==========================================
+            # --- TIER 1 & 2: LLM & RAG COMPLIANCE ---
+            # ==========================================
+            if not flagged_batch.empty:
+                results, verdicts = [], []
+                progress = st.progress(0)
 
-# --- Phase 2: Analytics & Deep Investigation ---
+                # Notice we ONLY iterate over the flagged_batch, saving massive API costs
+                for idx, row in flagged_batch.reset_index().iterrows():
+                    analysis, verdict = run_tiered_audit(row)
+                    results.append(analysis)
+                    verdicts.append(verdict)
+                    progress.progress((idx + 1) / len(flagged_batch))
+
+                flagged_batch['Forensic_Analysis'] = results
+                flagged_batch['Verdict'] = verdicts
+
+                # Update session state with ONLY the investigated transactions
+                st.session_state.audit_results = flagged_batch
+                st.rerun()
+            else:
+                st.success(
+                    "✅ Tier 0 ML determined all transactions in this batch are statistically normal. No LLM processing required.")
+
+# --- PHASE 2: Investigation & HITL ---
 else:
     df = st.session_state.audit_results
 
-    # Analytical Intelligence
-    st.subheader("Analytical Insights")
-    chart_col_1, chart_col_2 = st.columns(2)
+    st.subheader("Global Risk Insights")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.plotly_chart(
+            px.bar(df.groupby('country').size().reset_index(name='count'), x='country', y='count', title="Jurisdiction",
+                   color_discrete_sequence=['#00CC96']), use_container_width=True)
+    with c2:
+        st.plotly_chart(px.pie(df, names='Verdict', hole=0.4, title="Risk Composition", color='Verdict',
+                               color_discrete_map={'Clear': '#00CC96', 'Suspicious': '#EF553B'}),
+                        use_container_width=True)
 
-    with chart_col_1:
-        fig_geo = px.bar(
-            df.groupby('country').size().reset_index(name='count'),
-            x='country', y='count', title="Jurisdictional Exposure",
-            color_discrete_sequence=['#00CC96']
-        )
-        st.plotly_chart(fig_geo, use_container_width=True)
+    st.subheader("Investigative Ledger")
+    st.dataframe(df, use_container_width=True, hide_index=True)
 
-    with chart_col_2:
-        fig_risk = px.pie(
-            df, names='Verdict', hole=0.4,
-            title="Risk Profile Distribution",
-            color='Verdict',
-            color_discrete_map={'Clear': '#00CC96', 'Suspicious': '#EF553B'}
-        )
-        st.plotly_chart(fig_risk, use_container_width=True)
-
-    # Human-in-the-Loop Review
-    st.subheader("Forensic Audit Ledger")
-    st.data_editor(
-        df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Verified": st.column_config.CheckboxColumn("Approve?"),
-            "Forensic_Analysis": st.column_config.TextColumn("Reasoning", width="large")
-        },
-        disabled=["transaction_id", "amount", "country", "Forensic_Analysis", "Verdict"]
-    )
-
-    # --- ADVANCED INVESTIGATIVE TOOLS (LangGraph Integration) ---
+    # --- ADVANCED TOPOLOGY INVESTIGATION (WITH HITL) ---
     st.divider()
-    st.subheader("🔍 Advanced Network Investigation")
-    st.info("Utilizing LangGraph state machines to analyze transactional topology and circular layering patterns.")
+    st.subheader("🔍 Topology Investigation & Human-in-the-Loop")
+    st.info("Stateful graph analysis with autonomous pausing for critical obfuscation.")
 
-    invest_col1, invest_col2 = st.columns([1, 2])
+    inv_c1, inv_c2 = st.columns([1, 2])
+    with inv_c1:
+        selected_id = st.selectbox("Select Target for Network Audit:", df['transaction_id'].tolist())
+        thread_config = {"configurable": {"thread_id": str(selected_id)}}
 
-    with invest_col1:
-        target_ids = df['transaction_id'].tolist()
-        selected_id = st.selectbox("Select Target for Network Audit:", target_ids)
-
-        if st.button("🚀 Run Deep Graph Audit"):
+        if st.button("Initialize Deep Graph Audit"):
             row = df[df['transaction_id'] == selected_id].iloc[0]
 
-            # Simulated network context for circular flow detection
-            mock_history = [
-                {"sender": "External_Node_X", "receiver": row['sender'], "amount": 9500},
-                {"sender": row['sender'], "receiver": "High_Risk_Vault", "amount": 10000},
-                {"sender": "High_Risk_Vault", "receiver": row['sender'], "amount": 9900}
-            ]
+            raw_network_df = df[(df['sender'] == row['sender']) | (df['receiver'] == row['sender'])]
+            network_context = json.loads(raw_network_df.to_json(orient='records'))
 
-            with st.spinner("Analyzing Network Topology..."):
-                inputs = {
-                    "transaction_metadata": {"sender": row['sender'], "receiver": row['receiver'],
-                                             "amount": row['amount']},
-                    "network_history": mock_history,
-                    "detected_patterns": [], "risk_score": 0, "forensic_summary": ""
+            with st.spinner("Executing Graph Nodes..."):
+                initial_state = {
+                    "transaction_metadata": {
+                        "sender": str(row['sender']),
+                        "receiver": str(row['receiver']),
+                        "amount": float(row['amount'])
+                    },
+                    "network_history": network_context,
+                    "rag_verdict": str(row['Verdict']),
+                    "detected_patterns": [],
+                    "risk_score": 0,
+                    "forensic_summary": "",
+                    "requires_human_review": False
                 }
-                graph_result = forensic_graph.invoke(inputs)
+                forensic_graph.invoke(initial_state, config=thread_config)
 
-            with invest_col2:
-                st.write("**Forensic Graph Intelligence Output**")
-                risk_lvl = graph_result["risk_score"]
-                st.metric("Network Risk Confidence", f"{risk_lvl}%", delta="Critical" if risk_lvl > 50 else "Stable",
-                          delta_color="inverse")
-                st.success(graph_result["forensic_summary"])
+    with inv_c2:
+        current_state = forensic_graph.get_state(thread_config)
 
-                if graph_result["detected_patterns"]:
-                    with st.expander("Topology Anomalies Detected"):
-                        for p in graph_result["detected_patterns"]:
-                            st.write(f"• {p}")
+        if current_state and current_state.values:
+            vals = current_state.values
+            st.metric("Graph Confidence Score", f"{vals.get('risk_score', 0)}%",
+                      delta="Critical Alert" if vals.get('risk_score', 0) > 50 else "System Stable",
+                      delta_color="inverse")
 
-    # Actionable Intelligence Tabs
-    t_sar, t_pep = st.tabs(["🏛️ SAR Narratives", "🌐 PEP Screening"])
+            if vals.get("detected_patterns"):
+                with st.expander("Topology Anomalies Detected", expanded=True):
+                    for p in vals["detected_patterns"]:
+                        st.write(f"• {p}")
+
+            # THE HITL CATCHER
+            if current_state.next and "human_intervention_required" in current_state.next:
+                st.error("🛑 GRAPH PAUSED: Critical obfuscation detected. Human authorization required to proceed.")
+                if st.button("⚖️ Approve Findings & Resume Graph"):
+                    with st.spinner("Resuming Graph Execution..."):
+                        final_result = forensic_graph.invoke(None, config=thread_config)
+                        st.success("Graph Resumed and Completed.")
+                        st.write(f"**Final System Summary:** {final_result['forensic_summary']}")
+                        st.balloons()
+            elif not current_state.next:
+                st.success(vals.get("forensic_summary", "Audit Complete."))
+
+    # --- ACTIONABLE INTELLIGENCE TABS ---
+    st.divider()
+    t_sar, t_pep = st.tabs(["🏛️ SAR Narrative Generator", "🌐 PEP & Sanctions Screening"])
+
     with t_sar:
-        flagged = df[df['Verdict'] == 'Suspicious']['transaction_id'].tolist()
-        if flagged:
-            sel = st.selectbox("Select ID for SAR Drafting:", flagged)
-            if st.button("Generate Narrative"):
-                context = df[df['transaction_id'] == sel]['Forensic_Analysis'].values[0]
-                st.text_area("Drafted Narrative", rag_provider.llm.invoke(f"Convert to SAR: {context}").content,
-                             height=200)
+        flagged_ids = df[df['Verdict'] == 'Suspicious']['transaction_id'].tolist()
+        if flagged_ids:
+            sel_sar = st.selectbox("Select Flagged Transaction for SAR:", flagged_ids)
+            if st.button("Generate Strictly-Typed SAR"):
+                row = df[df['transaction_id'] == sel_sar].iloc[0]
+                context = row['Forensic_Analysis']
+
+                with st.spinner("Drafting JSON Compliant SAR via Pydantic..."):
+                    try:
+                        structured_llm = rag_provider.llm.with_structured_output(SuspiciousActivityReport)
+                        prompt = f"Generate a formal SAR based on this data. ID: {sel_sar}, Context: {context}"
+                        generated_sar = structured_llm.invoke(prompt)
+
+                        st.success("Structured SAR Generated Successfully")
+                        st.json(generated_sar.model_dump())
+                    except Exception as e:
+                        st.error(f"Failed to generate structured SAR. Check AI configurations. Error: {e}")
         else:
-            st.info("No suspicious transactions found.")
+            st.info("No suspicious transactions identified for SAR drafting.")
 
     with t_pep:
-        q_name = st.text_input("Search Global Sanctions/PEP Lists:")
-        if q_name:
-            st.markdown(rag_provider.query(f"Identify if {q_name} is a PEP or on a sanctions list."))
+        query_name = st.text_input("Screen Entity Name (Person/Company):")
+        # Deterministic Watchlist
+        GLOBAL_WATCHLIST = ["Vladimir Putin", "Kim Jong Un", "Lazarus Group", "Sinaloa Cartel", "Viktor Bout",
+                            "Tornado Cash"]
+
+        if query_name:
+            with st.spinner(f"Running fuzzy algorithmic screening on '{query_name}'..."):
+                best_match, score, _ = process.extractOne(query_name, GLOBAL_WATCHLIST, scorer=fuzz.WRatio)
+                MATCH_THRESHOLD = 85
+
+                if score >= MATCH_THRESHOLD:
+                    st.error(f"🚨 CRITICAL ALERT: High probability match.")
+                    st.metric(label="Match Confidence Score", value=f"{round(score, 2)}%",
+                              delta="Requires Immediate Freeze", delta_color="inverse")
+                    st.write(f"**Matched Alias:** {best_match}")
+                    st.markdown("### Generating Compliance Directive...")
+                    pep_prompt = f"Write a brief 3-sentence legal directive to freeze transaction for '{query_name}' matching '{best_match}'."
+                    st.warning(rag_provider.llm.invoke(pep_prompt).content)
+                else:
+                    st.success(
+                        f"✅ Clear: No high-confidence matches found. (Highest match: {best_match} at {round(score, 2)}%)")

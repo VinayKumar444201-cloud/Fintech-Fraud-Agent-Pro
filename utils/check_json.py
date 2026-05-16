@@ -15,7 +15,6 @@ class TransactionDataValidator:
     """
 
     def __init__(self, data_dir: str = "data"):
-        # Resolve the absolute path to the data directory to prevent path errors
         base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.target_path = os.path.join(base_path, data_dir, 'transactions.json')
 
