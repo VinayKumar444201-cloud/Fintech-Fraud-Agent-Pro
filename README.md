@@ -1,44 +1,94 @@
-# 🛡️ Fintech Fraud Auditor Pro
-### Enterprise-Grade Forensic AML Compliance Suite
+# 🛡️ Fintech Fraud Auditor Pro: Agentic AML Engine
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Gemini 2.5 Flash](https://img.shields.io/badge/AI-Gemini%202.5%20Flash-green.svg)](https://cloud.google.com/vertex-ai)
-[![Vector DB: Qdrant](https://img.shields.io/badge/VectorDB-Qdrant-red.svg)](https://qdrant.tech/)
+An enterprise-grade, multi-tiered Anti-Money Laundering (AML) forensic platform. This architecture solves the primary bottleneck of Generative AI in financial services—cost and latency—by utilizing a statistical Machine Learning funnel to protect expensive LLM orchestration layers.
 
-## 📖 Overview
-Fintech Fraud Auditor Pro is a specialized Forensic Agent designed to automate Anti-Money Laundering (AML) transaction monitoring. By combining **Retrieval-Augmented Generation (RAG)** with the **FATF (Financial Action Task Force) 2025 Recommendations**, the system provides grounded, legally-defensible audit justifications rather than generic AI guesses.
+## 🏗️ Architecture: The Risk Funnel
 
-This tool bridges the gap between high-volume transaction data and complex regulatory frameworks, providing compliance officers with an automated first-look audit and formal report generation.
+Passing raw transaction streams directly to an LLM is an anti-pattern. This system implements a strict "Tiered Risk Funnel" to optimize compute costs and minimize API limits.
 
-## ✨ Key Features
-- **Grounded Forensic Auditing:** Uses Gemini 2.5 Flash to analyze transactions against a localized vector database of Oct 2025 FATF guidelines.
-- **Automated SAR Generation:** Instantly drafts formal Suspicious Activity Report (SAR) narratives based on identified risks.
-- **Analytical Dashboard:** Real-time visualization of jurisdiction exposure and risk distribution using Plotly.
-- **Professional PDF Reporting:** Generates high-fidelity, compliance-ready PDF audit logs for internal records.
-- **PEP & Sanctions Screening:** Integrated entity lookup for Politically Exposed Persons (PEP) and global sanction lists.
+```mermaid
+graph TD
+    A[Raw Ledger CSV] -->|Ingestion| B(Tier 0: Isolation Forest ML)
+    B -->|Score = 1 | C[Safe: Drop Transaction]
+    B -->|Score = -1| D(Tier 1: Deterministic Rules)
+    D -->|Amount < $10k| C
+    D -->|High Risk| E(Tier 2: RAG Compliance Inspector)
+    E -->|FATF 2025 Vector Search| F{LLM Verdict}
+    F -->|Clear| C
+    F -->|Suspicious| G(Tier 3: LangGraph Topology Agent)
+    G --> H{Obfuscation > 80%?}
+    H -->|Yes| I[🛑 Checkpoint: Human-in-the-Loop Pause]
+    I -->|Officer Approves| J[Pydantic SAR Generator]
+    H -->|No| J
+    J --> K[Structured JSON Report]
 
-## 🛠️ Technical Stack
-- **LLM Engine:** Google Vertex AI (Gemini 2.5 Flash)
-- **Vector Database:** Qdrant (Cloud/Managed)
-- **Frameworks:** LangChain (LCEL), Streamlit, Pydantic v2
-- **Data Visualization:** Plotly Express
-- **PDF Engine:** WeasyPrint (GTK+ Backend)
+🧠 The Tiers Explained
 
-## 🏗️ Architecture
-1. **Ingestion:** Regulatory PDFs are chunked and embedded into a 768-dimension Qdrant collection.
-2. **Retrieval:** The system fetches the top 5 most relevant legal clauses for every audited transaction.
-3. **Augmentation:** A Senior Auditor System Prompt ensures the LLM applies the "Risk-Based Approach" (RBA) strictly.
-4. **Output:** Results are presented in an interactive UI with human-in-the-loop verification capabilities.
+    Tier 0 (Statistical ML): An Unsupervised IsolationForest processes raw transactions in milliseconds. It mathematically drops statistically normal volume, forwarding only anomalies (saving ~80% in LLM API costs).
 
-## 🚀 Getting Started
+    Tier 1 (Deterministic): Hard-coded Python/Pandas logic filters for strict jurisdictional and financial thresholds.
 
-### Prerequisites
-- Python 3.10+
-- Google Cloud Project with Vertex AI API enabled
-- Qdrant Cloud Cluster and API Key
+    Tier 2 (Vector RAG): Suspicious transactions are grounded against FATF 2025 guidelines using a Qdrant Vector Database to prevent LLM hallucination on legal definitions.
 
-### Installation
-1. **Clone the repository:**
-   ```bash
-   git clone [https://github.com/YOUR_USERNAME/Fintech-Fraud-Agent.git](https://github.com/YOUR_USERNAME/Fintech-Fraud-Agent.git)
-   cd Fintech-Fraud-Agent
+    Tier 3 (Stateful Orchestration): A LangGraph agent traverses transaction history to calculate topological risk (circular smurfing, network velocity).
+
+🚀 Key Enterprise Features
+
+    Stateful Human-in-the-Loop (HITL): Utilizes LangGraph's MemorySaver to physically pause code execution when critical obfuscation is detected, requiring asynchronous human authorization to proceed.
+
+    Deterministic Output Contracts: Bypasses standard text generation by enforcing strict Pydantic schemas via Vertex AI, guaranteeing downstream systems receive perfectly structured JSON Suspicious Activity Reports (SARs).
+
+    Algorithmic Watchlist Screening: Replaced LLM prompting for OFAC/PEP sanctions screening with deterministic fuzzy matching (rapidfuzz Levenshtein distance), eliminating hallucination risk for critical compliance directives.
+
+🛠️ Tech Stack
+
+    AI & Orchestration: Google Vertex AI (Gemini Flash), LangGraph, LangChain
+
+    Machine Learning: Scikit-Learn (Isolation Forest)
+
+    Vector Database: Qdrant (Local/In-Memory)
+
+    Data Engineering: Pandas, Pydantic, RapidFuzz
+
+    Frontend Prototype: Streamlit
+
+💻 Local Setup
+
+1.Clone the repository and configure the virtual environment:
+
+Bash
+
+git clone [https://github.com/yourusername/fintech-fraud-auditor.git](https://github.com/yourusername/fintech-fraud-auditor.git)
+cd fintech-fraud-auditor
+python -m venv .venv
+source .venv/bin/activate  # On Windows use: .venv\Scripts\activate
+
+2.Install dependencies:
+
+Bash
+
+pip install -r requirements.txt
+
+3.Configure environment variables in a .env file:
+
+Code snippet
+
+GOOGLE_API_KEY=your_vertex_or_gemini_key
+
+4.Initialize the platform:
+
+Bash
+
+streamlit run app.py
+
+🛣️ Production Roadmap
+
+Note: This repository currently serves as a functional, synchronized prototype. The V2 enterprise architecture migration is planned as follows:
+
+    [ ] Decoupled Backend: Migrate synchronous Streamlit logic to an asynchronous FastAPI REST backend.
+
+    [ ] Message Queues: Implement Celery/Redis to handle heavy LangGraph topology traversal asynchronously, preventing thread-blocking during large batch audits.
+
+    [ ] Persistent State: Upgrade LangGraph's in-memory Checkpointer to PostgreSQL for durable HITL pauses.
+
+    [ ] Frontend: Rewrite UI layer in Next.js/React.
