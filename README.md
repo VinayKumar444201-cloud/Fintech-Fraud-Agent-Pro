@@ -20,7 +20,7 @@ graph TD
     H -->|Yes| I[🛑 Checkpoint: Human-in-the-Loop Pause]
     I -->|Officer Approves| J[Pydantic SAR Generator]
     H -->|No| J
-    J --> K[Structured JSON Report]
+    J --> K[Structured JSON Report]```
 
 🧠 The Tiers Explained
 
